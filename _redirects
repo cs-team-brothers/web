@@ -1,0 +1,7 @@
+# Proxy al feed de YouTube para que el navegador no tenga problema de CORS.
+# El sitio pide /yt-feed?playlist_id=XXXX y Netlify lo trae del servidor.
+/yt-feed  https://www.youtube.com/feeds/videos.xml  200
+
+# Proxy a pantry.cloud (almacen JSON de los top15 surf). El sitio pide
+# /pantry/<PANTRY_ID>/basket/<nombre> y Netlify lo trae del servidor.
+/pantry/*  https://getpantry.cloud/apiv1/pantry/:splat  200
