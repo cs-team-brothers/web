@@ -1573,12 +1573,11 @@ const Sparks = (() => {
 /* =====================  TOP15 SURF  ===================== */
 (function top15(){
   // URLs de los JSON que sube surf_wr (cvar surf_wr_share_url en cada server).
-  // Con pantry.cloud: GET https://getpantry.cloud/apiv1/pantry/<PANTRY_ID>/basket/<nombre>
+  // Con pantry.cloud: GET /pantry/<PANTRY_ID>/basket/<nombre>  (proxy /pantry/* en _redirects).
   // Agregar una entrada por cada servidor; la web muestra una pestana por cada una + "Todos".
-  // pantry.cloud permite CORS (*), asi que el navegador puede pedir los datos directo.
   const SURFWR_SOURCES = [
-    { url: 'https://getpantry.cloud/apiv1/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv5',  name: 'Surf +Timer' },
-    { url: 'https://getpantry.cloud/apiv1/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv10', name: 'Surf +Timer EZ' },
+    { url: '/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv5',  name: 'Surf +Timer' },
+    { url: '/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv10', name: 'Surf +Timer EZ' },
     // Para agregar otro servidor: una linea mas con su basket.
   ];
 
@@ -1611,7 +1610,14 @@ const Sparks = (() => {
       rows.forEach(r => out.push({ srv: f.name, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg }));
     });
     out.sort((a, b) => a.time - b.time);
-    return out;
+    // Un solo registro por jugador y servidor (el mejor): el feed puede traer la misma marca repetida.
+    const seen = new Set();
+    return out.filter(e => {
+      const id = e.srv + '|' + (e.key != null && e.key !== '' ? e.key : e.name);
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
   }
 
   function winnersFor(){
@@ -1756,19 +1762,14 @@ const Sparks = (() => {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
         const d = (j && j.maps) ? j : (j.data || j);
-        if (!d || !d.maps || !Object.keys(d.maps).length) throw new Error('JSON sin maps');
-        return { url: s.url, name: (d.tag ? '#' + d.tag : (d.server || s.name || s.url)), server: d.server, tag: d.tag, updated: d.updated, maps: d.maps };
+        if (!d || !d.maps) throw new Error('JSON sin maps');
+        return { name: (d.tag ? '#' + d.tag : (d.server || s.name || s.url)), server: d.server, tag: d.tag, updated: d.updated, maps: d.maps };
       } catch (err) {
         console.warn('[top15] no se pudo cargar', s.url, err);
         return null;
       }
     }));
-    // Si un servidor falla o devuelve datos invalidos (p.ej. el basket esta
-    // siendo sobrescrito por un PUT en este momento), se conserva su ultimo
-    // dato bueno en vez de borrar la tabla.
-    const prev = {};
-    feeds.forEach(f => { if (f.url) prev[f.url] = f; });
-    feeds = results.map((r, i) => r || prev[SURFWR_SOURCES[i].url]).filter(Boolean);
+    feeds = results.filter(Boolean);
     if (scope !== 'all' && scope >= feeds.length) scope = 'all';
     loading = false;
     render();
