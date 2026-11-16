@@ -1573,11 +1573,12 @@ const Sparks = (() => {
 /* =====================  TOP15 SURF  ===================== */
 (function top15(){
   // URLs de los JSON que sube surf_wr (cvar surf_wr_share_url en cada server).
-  // Con pantry.cloud: GET /pantry/<PANTRY_ID>/basket/<nombre>  (proxy /pantry/* en _redirects).
+  // Con pantry.cloud: GET https://getpantry.cloud/apiv1/pantry/<PANTRY_ID>/basket/<nombre>
   // Agregar una entrada por cada servidor; la web muestra una pestana por cada una + "Todos".
+  // pantry.cloud permite CORS (*), asi que el navegador puede pedir los datos directo.
   const SURFWR_SOURCES = [
-    { url: '/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv5',  name: 'Surf +Timer' },
-    { url: '/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv10', name: 'Surf +Timer EZ' },
+    { url: 'https://getpantry.cloud/apiv1/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv5',  name: 'Surf +Timer' },
+    { url: 'https://getpantry.cloud/apiv1/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv10', name: 'Surf +Timer EZ' },
     // Para agregar otro servidor: una linea mas con su basket.
   ];
 
