@@ -1756,7 +1756,7 @@ const Sparks = (() => {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
         const d = (j && j.maps) ? j : (j.data || j);
-        if (!d || !d.maps) throw new Error('JSON sin maps');
+        if (!d || !d.maps || !Object.keys(d.maps).length) throw new Error('JSON sin maps');
         return { url: s.url, name: (d.tag ? '#' + d.tag : (d.server || s.name || s.url)), server: d.server, tag: d.tag, updated: d.updated, maps: d.maps };
       } catch (err) {
         console.warn('[top15] no se pudo cargar', s.url, err);
