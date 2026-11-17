@@ -1573,14 +1573,17 @@ const Sparks = (() => {
 /* =====================  TOP15 SURF  ===================== */
 (function top15(){
   // URLs de los JSON que sube surf_wr (cvar surf_wr_share_url en cada server).
-  // Con pantry.cloud: GET https://getpantry.cloud/apiv1/pantry/<PANTRY_ID>/basket/<nombre>
   // Agregar una entrada por cada servidor; la web muestra una pestana por cada una + "Todos".
-  // pantry.cloud permite CORS (*), asi que el navegador puede pedir los datos directo.
   const SURFWR_SOURCES = [
     { url: 'https://getpantry.cloud/apiv1/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv5',  name: 'Surf +Timer' },
     { url: 'https://getpantry.cloud/apiv1/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv10', name: 'Surf +Timer EZ' },
     // Para agregar otro servidor: una linea mas con su basket.
   ];
+  const REFRESH_MS = 60000;   // refresco automatico
+  const TIMEOUT_MS = 12000;   // un fetch colgado nunca bloquea al resto
+  const RETRY_MS   = 5000;    // reintento rapido si justo el server estaba subiendo
+  const MAX_RETRY  = 3;
+  const CACHE_KEY  = 'bt_top15_cache_v2';
 
   const $wr = s => document.querySelector(s);
   const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1588,30 +1591,70 @@ const Sparks = (() => {
   const fmtDate = ts => { if (!ts) return '—'; const d = new Date(ts * 1000); const p = n => String(n).padStart(2, '0'); return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + String(d.getFullYear()).slice(2) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); };
   const fmtNum = (v, d = 0) => (v == null ? '—' : Number(v).toFixed(d));
 
-  let feeds = [];          // [{name, server, updated, maps:{map:[entries]}}]
-  let scope = 'all';       // 'all' o indice de feed
+  /* Estado por servidor, indexado por la posicion en SURFWR_SOURCES (estable):
+     slots[i] = ultimo dato BUENO de esa fuente (o null si nunca cargo).
+     Un dato malo, vacio, viejo o un error de red NUNCA pisa al dato bueno. */
+  const slots = SURFWR_SOURCES.map(() => null);
+  const errors = SURFWR_SOURCES.map(() => '');
+  const retries = SURFWR_SOURCES.map(() => 0);
+  let scope = 'all';   // 'all' o indice de SURFWR_SOURCES
   let curMap = '';
-  let loading = false;
+  let lastOkAt = 0;
 
-  const inScope = f => scope === 'all' || feeds.indexOf(f) === scope;
+  /* ---- validacion: solo se acepta un JSON completo con al menos un mapa con tiempos ---- */
+  function validFeed(j){
+    const d = (j && j.maps) ? j : (j && j.data ? j.data : null);
+    if (!d || typeof d.maps !== 'object' || d.maps === null || Array.isArray(d.maps)) return null;
+    const maps = {};
+    let n = 0;
+    Object.keys(d.maps).forEach(m => {
+      const rows = d.maps[m];
+      if (!Array.isArray(rows)) return;
+      const ok = rows.filter(r => r && typeof r === 'object' && isFinite(+r.time) && +r.time > 0 && r.name != null);
+      if (ok.length){ maps[m] = ok; n++; }
+    });
+    return n ? { server: d.server, tag: d.tag, updated: +d.updated || 0, maps } : null;
+  }
 
-  function scopeFeeds(){ return feeds.filter(inScope); }
+  /* ---- cache local: el top se ve al instante aunque el server este subiendo justo ahora ---- */
+  function saveCache(){
+    try {
+      const o = {};
+      slots.forEach((f, i) => { if (f) o[SURFWR_SOURCES[i].url] = f; });
+      localStorage.setItem(CACHE_KEY, JSON.stringify(o));
+    } catch (_) {}
+  }
+  function loadCache(){
+    try {
+      const o = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+      SURFWR_SOURCES.forEach((s, i) => {
+        const f = o && o[s.url] ? validFeed(o[s.url]) : null;
+        if (f) slots[i] = f;
+      });
+    } catch (_) {}
+  }
+
+  const slotName = i => {
+    const f = slots[i], s = SURFWR_SOURCES[i];
+    return f ? (f.tag ? '#' + f.tag : (f.server || s.name)) : s.name;
+  };
+  // Fuentes con datos, con su indice de origen.
+  const live = () => slots.map((f, i) => f ? { f, i, name: slotName(i) } : null).filter(Boolean);
+  const scopeFeeds = () => live().filter(x => scope === 'all' || x.i === scope);
 
   function allMaps(){
     const set = new Set();
-    scopeFeeds().forEach(f => Object.keys(f.maps || {}).forEach(m => set.add(m)));
+    scopeFeeds().forEach(x => Object.keys(x.f.maps).forEach(m => set.add(m)));
     return [...set].sort();
   }
 
+  const mk = (x, map, r) => ({ srv: x.name, map, name: r.name, key: r.key, time: +r.time, real: +r.real || 0, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg });
+
   function entriesFor(map){
-    // Devuelve [{srv, name, pos, time, date, avg, max, dist, air, jumps}] ordenado por tiempo.
     const out = [];
-    scopeFeeds().forEach(f => {
-      const rows = (f.maps || {})[map] || [];
-      rows.forEach(r => out.push({ srv: f.name, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg }));
-    });
+    scopeFeeds().forEach(x => (x.f.maps[map] || []).forEach(r => out.push(mk(x, map, r))));
     out.sort((a, b) => a.time - b.time);
-    // Un solo registro por jugador y servidor (el mejor): el feed puede traer la misma marca repetida.
+    // Un solo registro por jugador y servidor (el mejor).
     const seen = new Set();
     return out.filter(e => {
       const id = e.srv + '|' + (e.key != null && e.key !== '' ? e.key : e.name);
@@ -1621,33 +1664,26 @@ const Sparks = (() => {
     });
   }
 
+  // Vista "Todos": la mejor marca de cada mapa entre TODOS los servidores con datos.
   function winnersFor(){
-    // Vista "Todos": la mejor marca (top1) de cada mapa entre los servidores en scope.
-    const out = [];
-    const mapSet = new Set();
-    scopeFeeds().forEach(f => Object.keys(f.maps || {}).forEach(m => mapSet.add(m)));
-    mapSet.forEach(map => {
-      let best = null;
-      scopeFeeds().forEach(f => {
-        const rows = (f.maps || {})[map] || [];
-        if (rows.length && (!best || rows[0].time < best.time)) {
-          const r = rows[0];
-          best = { srv: f.name, map, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg };
-        }
+    const best = {};
+    scopeFeeds().forEach(x => {
+      Object.keys(x.f.maps).forEach(map => {
+        x.f.maps[map].forEach(r => {
+          const t = +r.time;
+          if (!best[map] || t < best[map].time) best[map] = mk(x, map, r);
+        });
       });
-      if (best) out.push(best);
     });
-    out.sort((a, b) => a.map.localeCompare(b.map));
-    return out;
+    return Object.keys(best).map(m => best[m]).sort((a, b) => a.map.localeCompare(b.map));
   }
 
   function playerEntries(q){
     const out = [];
-    scopeFeeds().forEach(f => {
-      Object.keys(f.maps || {}).forEach(map => {
-        ((f.maps || {})[map] || []).forEach(r => {
-          if (r.name && r.name.toLowerCase().includes(q))
-            out.push({ srv: f.name, map, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg });
+    scopeFeeds().forEach(x => {
+      Object.keys(x.f.maps).forEach(map => {
+        x.f.maps[map].forEach(r => {
+          if (r.name && String(r.name).toLowerCase().includes(q)) out.push(mk(x, map, r));
         });
       });
     });
@@ -1657,9 +1693,10 @@ const Sparks = (() => {
 
   function renderTabs(){
     const tabs = $wr('#wrTabs');
+    // Las pestanas salen de la configuracion: no desaparecen ni se reordenan si un server falla.
     let html = `<button class="wr-tab${scope === 'all' ? ' on' : ''}" data-s="all" type="button">Todos</button>`;
-    feeds.forEach((f, i) => {
-      html += `<button class="wr-tab${scope === i ? ' on' : ''}" data-s="${i}" type="button">${esc(f.name)}</button>`;
+    SURFWR_SOURCES.forEach((s, i) => {
+      html += `<button class="wr-tab${scope === i ? ' on' : ''}" data-s="${i}" type="button">${esc(slotName(i))}</button>`;
     });
     tabs.innerHTML = html;
     tabs.querySelectorAll('.wr-tab').forEach(b => b.addEventListener('click', () => {
@@ -1677,8 +1714,7 @@ const Sparks = (() => {
     sel.disabled = !maps.length || scope === 'all';
   }
 
-  // Definicion de columnas (todas las estadisticas siempre visibles; sin dato se muestra un guion).
-  function colDefs(withMap, hidePos, rows){
+  function colDefs(hidePos){
     const stat = (k, label, w) => ({
       l: label, w, r: true, cls: 'num',
       cell: e => Math.round(+e[k] || 0) > 0 ? (k === 'max' ? fmtNum(e.max, 0) : Math.round(e[k])) : '\u2014'
@@ -1689,7 +1725,7 @@ const Sparks = (() => {
       { l: 'Tiempo', w: 9, r: true, cls: 't', cell: e => fmtTime(e.real ? e.real : e.time) },
       { l: 'Mapa', w: 17, cls: 'wr-map', title: e => e.map, cell: e => esc(e.map) },
       { l: 'Servidor', w: 10, c: true, cls: 'wr-srv', title: e => e.srv, cell: e => esc(e.srv) },
-      Object.assign(stat('max', 'V m\u00e1x', 8)),
+      stat('max', 'V m\u00e1x', 8),
       stat('jumps', 'Saltos', 10),
       stat('ducks', 'Ducks', 9),
       stat('strafes', 'Strafes', 10),
@@ -1711,86 +1747,125 @@ const Sparks = (() => {
     }).join('') + '</tr>';
   }
 
+  function statusText(){
+    const bad = SURFWR_SOURCES.map((s, i) => errors[i] ? `${slotName(i)} (${errors[i]})` : '').filter(Boolean);
+    if (!bad.length) return '';
+    const ago = lastOkAt ? ` Ultima actualizacion correcta: ${fmtDate(lastOkAt / 1000)}.` : '';
+    return 'No se pudo actualizar: ' + bad.join(', ') + '. Se muestra el ultimo dato guardado.' + ago;
+  }
+
   function render(){
-    if (!feeds.length) {
-      $wr('#wrStatus').textContent = 'No hay datos de servidores todavía.';
+    const hasData = live().length > 0;
+    renderTabs();
+    if (!hasData){
+      renderHead(colDefs(false));
+      $wr('#wrMap').innerHTML = ''; $wr('#wrMap').disabled = true;
+      $wr('#wrStatus').textContent = loadingNow ? 'Cargando…' : (statusText() || 'No hay datos de servidores todavía.');
       $wr('#wrBody').innerHTML = '<tr><td colspan="12"><div class="wr-empty">Cuando los servidores compartan su top15, van a aparecer acá.</div></td></tr>';
       $wr('#wrMeta').textContent = '';
       return;
     }
 
     const q = ($wr('#wrFind').value || '').trim().toLowerCase();
-    renderTabs();
     renderMapSelect();
 
-    let rows, withMap = false, hidePos = false, title = '';
+    let rows, hidePos = false, title = '';
     if (q) {
       rows = playerEntries(q);
-      withMap = true;
       title = `Resultados para "${q}"`;
     } else if (scope === 'all') {
       rows = winnersFor();
-      withMap = true;
       hidePos = true;
       title = 'Mejores marcas por mapa';
     } else {
       rows = entriesFor(curMap).map(e => Object.assign(e, { map: curMap }));
       title = curMap;
     }
-    const cols = colDefs(withMap, hidePos, rows);
+    const cols = colDefs(hidePos);
     renderHead(cols);
     $wr('#wrTbl').classList.toggle('plain', hidePos);
 
     if (!rows.length) {
-      $wr('#wrBody').innerHTML = `<tr><td colspan="12"><div class="wr-empty">${q ? 'Nadie coincide con esa búsqueda.' : 'Todavía no hay tiempos en este mapa.'}</div></td></tr>`;
+      const msg = q ? 'Nadie coincide con esa búsqueda.' : (scope !== 'all' && !slots[scope] ? 'Este servidor todavía no compartió su top.' : 'Todavía no hay tiempos en este mapa.');
+      $wr('#wrBody').innerHTML = `<tr><td colspan="12"><div class="wr-empty">${msg}</div></td></tr>`;
     } else {
       $wr('#wrBody').innerHTML = rows.map((e, i) => rowHtml(e, i, cols)).join('');
     }
 
-    // Meta: última actualización por servidor
-    const ups = feeds.map(f => `${esc(f.name)}: ${f.updated ? fmtDate(f.updated) : 's/f'}`).join(' · ');
+    const ups = SURFWR_SOURCES.map((s, i) => `${esc(slotName(i))}: ${slots[i] && slots[i].updated ? fmtDate(slots[i].updated) : 's/f'}`).join(' · ');
     $wr('#wrMeta').innerHTML = `${esc(title)} — ${ups}`;
-    $wr('#wrStatus').textContent = '';
+    $wr('#wrStatus').textContent = statusText();
   }
 
-  async function load(){
-    if (loading) return;
-    loading = true;
-    $wr('#wrStatus').textContent = 'Cargando…';
-    const results = await Promise.all(SURFWR_SOURCES.map(async s => {
-      try {
-        const r = await fetch(s.url, { cache: 'no-store' });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const j = await r.json();
-        const d = (j && j.maps) ? j : (j.data || j);
-        if (!d || !d.maps || !Object.keys(d.maps).length) throw new Error('JSON sin maps');
-        return { url: s.url, name: (d.tag ? '#' + d.tag : (d.server || s.name || s.url)), server: d.server, tag: d.tag, updated: d.updated, maps: d.maps };
-      } catch (err) {
-        console.warn('[top15] no se pudo cargar', s.url, err);
-        return null;
+  /* ---- carga: cada fuente es independiente, con timeout; nada bloquea ni borra datos buenos ---- */
+  let loadingNow = false;
+  let refreshT = 0;
+  const retryT = SURFWR_SOURCES.map(() => 0);
+
+  async function fetchJson(url){
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+    try {
+      const r = await fetch(url, { cache: 'no-store', signal: ctl.signal });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function loadOne(i, manual){
+    const s = SURFWR_SOURCES[i];
+    clearTimeout(retryT[i]);
+    try {
+      const f = validFeed(await fetchJson(s.url));
+      if (!f) throw new Error('datos incompletos');
+      const cur = slots[i];
+      // Un dato mas viejo que el que ya tenemos (respuesta atrasada) no pisa al nuevo.
+      if (cur && cur.updated && f.updated && f.updated < cur.updated) throw new Error('dato desactualizado');
+      slots[i] = f;
+      errors[i] = '';
+      retries[i] = 0;
+      lastOkAt = Date.now();
+      saveCache();
+    } catch (err) {
+      const msg = err && err.name === 'AbortError' ? 'sin respuesta' : (err && err.message) || 'error';
+      console.warn('[top15] no se pudo cargar', s.url, err);
+      // Si el server justo estaba subiendo, el reintento corto lo recupera enseguida.
+      if (!manual && retries[i] < MAX_RETRY){
+        retries[i]++;
+        retryT[i] = setTimeout(() => loadOne(i, false).then(render), RETRY_MS);
+      } else {
+        errors[i] = msg;
       }
-    }));
-    // Si un servidor falla o devuelve datos invalidos (p.ej. el basket esta
-    // siendo sobrescrito por un PUT en este momento), se conserva su ultimo
-    // dato bueno en vez de borrar la tabla.
-    const prev = {};
-    feeds.forEach(f => { if (f.url) prev[f.url] = f; });
-    feeds = results.map((r, i) => r || prev[SURFWR_SOURCES[i].url]).filter(Boolean);
-    if (scope !== 'all' && scope >= feeds.length) scope = 'all';
-    loading = false;
+      // Importante: slots[i] NO se toca. El top anterior sigue en pantalla.
+    }
+  }
+
+  async function load(manual){
+    if (loadingNow) return;
+    loadingNow = true;
+    const btn = $wr('#wrReload');
+    if (btn) btn.disabled = true;
+    if (!live().length) $wr('#wrStatus').textContent = 'Cargando…';
+    try {
+      await Promise.all(SURFWR_SOURCES.map((s, i) => loadOne(i, !!manual)));
+    } finally {
+      loadingNow = false;          // pase lo que pase, la proxima carga puede correr
+      if (btn) btn.disabled = false;
+    }
     render();
-    if (!feeds.length)
-      $wr('#wrStatus').textContent = SURFWR_SOURCES.length
-        ? 'No se pudieron cargar los datos. Revisá que los servidores estén compartiendo (surf_wr_share).'
-        : 'Falta configurar las URLs de los servidores en SURFWR_SOURCES (arriba del script).';
   }
 
   $wr('#wrMap').addEventListener('change', e => { curMap = e.target.value; render(); });
   $wr('#wrFind').addEventListener('input', render);
-  $wr('#wrReload').addEventListener('click', load);
+  $wr('#wrReload').addEventListener('click', () => load(true));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(false); });
 
-  load();
-  setInterval(load, 60000);
+  loadCache();   // 1) mostrar al instante lo ultimo que se vio
+  render();
+  load(false);   // 2) y refrescar en segundo plano
+  refreshT = setInterval(() => load(false), REFRESH_MS);
 })();
 
 /* =====================  ARRANQUE  ===================== */
