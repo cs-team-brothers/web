@@ -1574,7 +1574,7 @@ const Sparks = (() => {
 (function top15(){
   // URLs de los JSON que sube surf_wr (cvar surf_wr_share_url en cada server).
   // Con pantry.cloud: GET https://getpantry.cloud/apiv1/pantry/<PANTRY_ID>/basket/<nombre>
-  // Agregar una entrada por cada servidor; la web muestra una pestana por cada una + "Todos".
+  // Agregar una entrada por cada servidor; la web muestra una pestana por cada una + "Pro".
   // pantry.cloud permite CORS (*), asi que el navegador puede pedir los datos directo.
   const SURFWR_SOURCES = [
     { url: 'https://getpantry.cloud/apiv1/pantry/8fdcebe5-d279-44e4-bcfc-e6ea632d9b88/basket/srv5',  name: 'Surf +Timer' },
@@ -1608,7 +1608,7 @@ const Sparks = (() => {
     const out = [];
     scopeFeeds().forEach(f => {
       const rows = (f.maps || {})[map] || [];
-      rows.forEach(r => out.push({ srv: f.name, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg }));
+      rows.forEach(r => out.push({ srv: f.name, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg, pre: r.pre }));
     });
     out.sort((a, b) => a.time - b.time);
     // Un solo registro por jugador y servidor (el mejor): el feed puede traer la misma marca repetida.
@@ -1622,7 +1622,7 @@ const Sparks = (() => {
   }
 
   function winnersFor(){
-    // Vista "Todos": la mejor marca (top1) de cada mapa entre los servidores en scope.
+    // Vista "Pro": la mejor marca (top1) de cada mapa entre los servidores en scope.
     const out = [];
     const mapSet = new Set();
     scopeFeeds().forEach(f => Object.keys(f.maps || {}).forEach(m => mapSet.add(m)));
@@ -1633,7 +1633,7 @@ const Sparks = (() => {
         // La mejor marca es la de menor tiempo de TODAS las filas del mapa (no se asume que la primera sea la mejor).
         rows.forEach(r => {
           if (!best || r.time < best.time) {
-            best = { srv: f.name, map, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg };
+            best = { srv: f.name, map, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg, pre: r.pre };
           }
         });
       });
@@ -1649,7 +1649,7 @@ const Sparks = (() => {
       Object.keys(f.maps || {}).forEach(map => {
         ((f.maps || {})[map] || []).forEach(r => {
           if (r.name && r.name.toLowerCase().includes(q))
-            out.push({ srv: f.name, map, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg });
+            out.push({ srv: f.name, map, name: r.name, key: r.key, time: r.time, real: r.real, date: r.date, avg: r.avg, max: r.max, dist: r.dist, air: r.air, jumps: r.jumps, strafes: r.strafes, ducks: r.ducks, pg: r.pg, pre: r.pre });
         });
       });
     });
@@ -1659,7 +1659,7 @@ const Sparks = (() => {
 
   function renderTabs(){
     const tabs = $wr('#wrTabs');
-    let html = `<button class="wr-tab${scope === 'all' ? ' on' : ''}" data-s="all" type="button">Todos</button>`;
+    let html = `<button class="wr-tab${scope === 'all' ? ' on' : ''}" data-s="all" type="button">Pro</button>`;
     feeds.forEach((f, i) => {
       html += `<button class="wr-tab${scope === i ? ' on' : ''}" data-s="${i}" type="button">${esc(f.name)}</button>`;
     });
@@ -1675,7 +1675,7 @@ const Sparks = (() => {
     const sel = $wr('#wrMap');
     const maps = allMaps();
     const isAll = scope === 'all';
-    // En "Todos": '*' = mejores marcas de cada mapa; o un mapa puntual con el top combinado de todos los servidores.
+    // En "Pro": '*' = mejores marcas de cada mapa; o un mapa puntual con el top combinado de todos los servidores.
     if (!(maps.includes(curMap) || (isAll && curMap === '*'))) curMap = isAll ? '*' : (maps[0] || '');
     sel.innerHTML = (isAll ? `<option value="*"${curMap === '*' ? ' selected' : ''}>Todos los mapas (récords)</option>` : '')
       + maps.map(m => `<option value="${esc(m)}"${m === curMap ? ' selected' : ''}>${esc(m)}</option>`).join('');
@@ -1695,6 +1695,7 @@ const Sparks = (() => {
       { l: 'Mapa', w: 17, cls: 'wr-map', title: e => e.map, cell: e => esc(e.map) },
       { l: 'Servidor', w: 10, c: true, cls: 'wr-srv', title: e => e.srv, cell: e => esc(e.srv) },
       Object.assign(stat('max', 'V m\u00e1x', 8)),
+      stat('pre', 'PRE', 7),
       stat('jumps', 'Saltos', 10),
       stat('ducks', 'Ducks', 9),
       stat('strafes', 'Strafes', 10),
